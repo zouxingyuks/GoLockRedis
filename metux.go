@@ -169,12 +169,13 @@ func (m *mutex) Unlock() error {
 	if m.cancel == nil {
 		return nil
 	}
+	//使用 lua 脚本实现原子操作
+	_, err := unlockScript.Run(m.ctx, m.client, []string{m.lockKey}, m.lockValue).Result()
+
 	//关闭看门狗
 	m.cancel()
 	m.cancel = nil
 	// 不管怎么样，本地锁都要释放，远端锁释放失败可以靠超时机制来兜底释放
-	//使用 lua 脚本实现原子操作
-	_, err := unlockScript.Run(m.ctx, m.client, []string{m.lockKey}, m.lockValue).Result()
 	if err != nil {
 		return errors.Wrap(ErrUnlockFailed, err.Error())
 	}
