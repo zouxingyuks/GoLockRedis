@@ -13,4 +13,17 @@ var (
 			return 0
 		end
 	`)
+	lockScript = redis.NewScript(`
+		local key = KEYS[1]
+        local value = ARGV[1]
+        local expire = ARGV[2]
+
+        local set_result = redis.call('SETNX', key, value)
+        if set_result == 1 then
+            redis.call('PEXPIRE', key, expire)
+            return {1, value}
+        else
+            return {0, redis.call('GET', key)}
+        end
+	`)
 )
