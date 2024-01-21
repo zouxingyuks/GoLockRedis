@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/go-redis/redis/v8"
 	"github.com/pkg/errors"
 	"time"
@@ -12,11 +11,9 @@ type Mutex interface {
 	//Lock 加锁
 	Lock() (string, error)
 	//TryLock 自旋锁
-	TryLock(timeout time.Duration) (string, error)
+	TryLock(tickerTime time.Duration, timerTime time.Duration) (string, error)
 	//Unlock 释放锁
 	Unlock() error
-	//ForceUnlock 强制释放锁
-	ForceUnlock() error
 	//Refresh 手动刷新锁的过期时间
 	Refresh() error
 }
@@ -67,7 +64,7 @@ func newMutex(client *redis.Client, lockKey string, lockValue any, opts ...Optio
 // 1. 判断 redis 上是否锁住了
 // 2. 如果 redis 上成功，则返回当前锁的 key，否则返回空
 func (m *mutex) Lock() (string, error) {
-	//基于 redis 的 setnx 命令实现分布式锁
+	//基于 redis 的 setNX 命令实现分布式锁
 	ok, err := m.client.SetNX(context.Background(), m.lockKey, m.lockValue, m.expire).Result()
 	if err != nil {
 		//加锁失败了，尝试释放锁
@@ -150,14 +147,16 @@ func (m *mutex) watchDog(interval time.Duration) {
 		select {
 		case <-m.ctx.Done():
 			{
-				//todo 结束
 				return
 			}
 			// 定时续费
 		case <-ticker.C:
 			{
-				fmt.Println("续费")
-				m.Refresh()
+				err := m.Refresh()
+				if err != nil {
+					//todo 如何取应对看门狗续费失败的情况
+					return
+				}
 			}
 		}
 
@@ -167,29 +166,18 @@ func (m *mutex) watchDog(interval time.Duration) {
 // Unlock 释放锁
 func (m *mutex) Unlock() error {
 	//1. 先检测是否上锁，如果没有上锁，则直接返回
-	if m.lockValue == nil {
+	if m.cancel == nil {
 		return nil
 	}
-	//使用 lua 脚本实现原子操作
-	unlockScript.Run(m.ctx, m.client, []string{m.lockKey}, m.lockValue)
 	//关闭看门狗
 	m.cancel()
-	//释放锁
-	m.lockValue = nil
+	m.cancel = nil
+	// 不管怎么样，本地锁都要释放，远端锁释放失败可以靠超时机制来兜底释放
+	//使用 lua 脚本实现原子操作
+	_, err := unlockScript.Run(m.ctx, m.client, []string{m.lockKey}, m.lockValue).Result()
+	if err != nil {
+		return errors.Wrap(ErrUnlockFailed, err.Error())
+	}
 	return nil
 
 }
-
-// ForceUnlock 强制释放锁
-func (m *mutex) ForceUnlock() error {
-	// 如果锁本身已经空了，那么就不需要释放了
-	if m.lockValue == nil {
-		return nil
-	}
-	panic("implement me")
-}
-
-// valueGen 生成锁的value
-type valueGen func() any
-
-//  todo 对非原子操作的函数加锁与回溯
