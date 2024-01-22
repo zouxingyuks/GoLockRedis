@@ -48,12 +48,3 @@ func (p *Pool) NewMutex(ctx context.Context, lockKey string, opts ...Option) Mut
 	m := NewMutex(p.client, p.kGen(lockKey), p.vGen(ctx), opts...)
 	return m
 }
-
-// NewRWMutex 创建一个分布式读写锁
-// client redis客户端
-// lockKey 锁的key
-// lockValue 锁的value（用于实现可重入式锁）
-func (p *Pool) NewRWMutex(lockKey string, opts ...Option) RWMutex {
-	m := newRWMutex(p.client, lockKey, opts...)
-	return m
-}
