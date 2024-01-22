@@ -19,8 +19,6 @@ type Mutex interface {
 }
 
 type mutex struct {
-	//name 锁的名称
-	name string
 	//client redis客户端
 	client *redis.Client
 	//lockKey 是用于存储临界区资源的唯一标识
