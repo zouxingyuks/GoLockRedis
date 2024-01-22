@@ -23,9 +23,9 @@ type mutex struct {
 	name string
 	//client redis客户端
 	client *redis.Client
-	//lockKey 锁的key
+	//lockKey 是用于存储临界区资源的唯一标识
 	lockKey string
-	//lockValue 锁的value
+	//lockValue 是用于存储当前进程的唯一标识，用于实现可重入式锁
 	lockValue any
 	//expire 锁的过期时间
 	expire time.Duration
@@ -37,12 +37,11 @@ type mutex struct {
 	IsWatchDog bool
 }
 
-// newMutex 创建一个分布式锁
+// NewMutex 创建一个分布式锁
 // client redis客户端
 // lockKey 锁的key
 // lockValue 锁的value（用于实现可重入式锁）
-func newMutex(client *redis.Client, lockKey string, lockValue any, opts ...Option) Mutex {
-	//todo 设置默认值
+func NewMutex(client *redis.Client, lockKey string, lockValue any, opts ...Option) Mutex {
 	m := &mutex{
 		//默认redis客户端为本地客户端
 		client: client,
@@ -62,10 +61,14 @@ func newMutex(client *redis.Client, lockKey string, lockValue any, opts ...Optio
 
 // Lock 加锁
 // 1. 判断 redis 上是否锁住了
-// 2. 如果 redis 上成功，则返回当前锁的 key，否则返回空
+// 2. 如果 redis 上成功，则返回获取此锁的 gid，否则返回空.
+// 此gid 用于实现可重入式锁，如果 gid 相同，则可以重入
 func (m *mutex) Lock() (string, error) {
 	//基于 redis 的 setNX 命令实现分布式锁
-	ok, err := m.client.SetNX(context.Background(), m.lockKey, m.lockValue, m.expire).Result()
+	result, err := lockScript.Run(context.Background(), m.client, []string{m.lockKey}, m.lockValue, m.expire).Result()
+	resultSlice, _ := result.([]interface{})
+	ok := resultSlice[0].(int64) == 1
+	gid := resultSlice[1].(string)
 	if err != nil {
 		//加锁失败了，尝试释放锁
 		terr := m.Unlock()
@@ -90,8 +93,10 @@ func (m *mutex) Lock() (string, error) {
 		}
 		return m.lockKey, nil
 	}
-
-	return "", ErrMutexHasLocked
+	if err != nil {
+		err = errors.Wrap(ErrMutexHasLocked, err.Error())
+	}
+	return gid, err
 }
 
 // TryLock 自旋锁
@@ -145,11 +150,12 @@ func (m *mutex) watchDog(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	for {
 		select {
+		//关闭看门狗
 		case <-m.ctx.Done():
 			{
 				return
 			}
-			// 定时续费
+		// 定时续费
 		case <-ticker.C:
 			{
 				err := m.Refresh()
